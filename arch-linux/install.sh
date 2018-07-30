@@ -102,6 +102,8 @@ function parse_args(){
 
 function rank_mirrors () {
   tmp_ml="/tmp/mirrorlist"
+  bkp_ml="/tmp/mirrorlist.bkp"
+  cp /etc/pacman.d/mirrorlist ${bkp_ml}
   echo "Ranking mirrors"
   grepped="$(grep -i ${CNTY} /etc/pacman.d/mirrorlist | grep -v '^#')"
   if [ -z "${grepped}" ]; then
@@ -195,23 +197,25 @@ function setup_bootloader () {
   fi
 }
 
-function main () {
-  rank_mirrors
-  if [ $? -ne 0 ]; then
+function test_connectivity () {
+  if ! ping -q -c1 -W2 google.com > /dev/null; then
     echo "error: Make sure you got an internet connection"
     exit 1
   fi
+}
 
-  set -e
+function main () {
+  test_connectivity
+  command -v rankmirrors > /dev/null && rank_mirrors
   ${SKIP_DISK} || setup_disk
   install_packages
   setup_users
   setup_system_configs
   setup_bootloader
-
   echo -e "Done! Instalation finished!"
-  set +e
 }
 
 parse_args $@
+set -e
 main
+set +e
