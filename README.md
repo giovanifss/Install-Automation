@@ -5,7 +5,8 @@ Collection of scripts to automate some installation processes
 - Operating Systems install:
     - [Arch Linux](operating-systems/arch-linux.sh)
 - Git Server Install:
-    - [Debian or Arch Linux](git-server/arch-debian.sh)
+    - [Debian](git-server/debian.sh)
+    - [Arch Linux](git-server/arch-linux.sh)
 - SSH Server Install:
     - [Debian or Arch Linux](ssh-server/arch-debian.sh)
 - OpenVPN server install:
