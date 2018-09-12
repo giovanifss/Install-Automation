@@ -11,5 +11,6 @@ Collection of scripts to automate some installation processes
     - [Debian or Arch Linux](ssh-server/arch-debian.sh)
 - OpenVPN server install:
     - [Debian or Arch Linux](openvpn/arch-debian.sh)
+    - [OpenBSD](openvpn/openbsd.sh)
 - Authoritative bind server:
     - [Debian](bind-authoritative/debian.sh)
