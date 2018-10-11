@@ -8,6 +8,7 @@ CNTY="us"
 DISK="/dev/sda"
 LCL="UTC"
 SKIP_DISK=false
+SERIAL=false
 
 function echoerr {
   cat <<< "$@" 1>&2
@@ -36,6 +37,7 @@ function display_help(){
   echo "  -d, --disk            Defines the base disk for the installation. Default: sda (E.g. /dev/sda)."
   echo "  -l, --locale          Defines the locale for time configuration. Default: UTC."
   echo "      --skip-disk       Do not perform disk partitioning."
+  echo "      --serial          Enable serial console interaction in grub."
   echo "  -e, --extra-packages  The extra packages for installation. Must be specified inside quotes. E.g. -e \"vim git\"."
   echo "  -h, --help            Display help message."
 }
@@ -88,6 +90,9 @@ function parse_args(){
 
       -s|--skip-disk)
         SKIP_DISK=true;;
+
+      --serial)
+        SERIAL=true;;
 
       -h|--help)
         display_help
@@ -179,6 +184,14 @@ function setup_system_configs () {
   arch-chroot /mnt mkinitcpio -p linux
 }
 
+function setup_serial () {
+  arch-chroot /mnt bash -c "grep -v GRUB_CMDLINE_LINUX_DEFAULT= /etc/default/grub > /etc/default/clean_grub"
+  arch-chroot /mnt bash -c "echo GRUB_CMDLINE_LINUX_DEFAULT=\\\"quiet console=tty0 console=ttyS0,38400n8\\\" >> /etc/default/clean_grub"
+  arch-chroot /mnt bash -c "echo GRUB_TERMINAL=serial >> /etc/default/clean_grub"
+  arch-chroot /mnt bash -c "echo GRUB_SERIAL_COMMAND=\\\"serial --speed=38400 --unit=0 --word=8 --parity=no --stop=1\\\" >> /etc/default/clean_grub"
+  arch-chroot /mnt mv /etc/default/clean_grub /etc/default/grub
+}
+
 function setup_bootloader () {
   if [ -d /sys/firmware/efi ]; then
     echo "Configuring bootctl"
@@ -192,6 +205,9 @@ function setup_bootloader () {
     arch-chroot /mnt bash -c "grep -v 'GRUB_CMDLINE_LINUX=\"\"' /etc/default/grub > /etc/default/clean_grub"
     arch-chroot /mnt bash -c "echo GRUB_CMDLINE_LINUX=\\\"cryptdevice=${DEVICE_UUID}:cryptroot\\\" >> /etc/default/clean_grub"
     arch-chroot /mnt mv /etc/default/clean_grub /etc/default/grub
+    if [ "$SERIAL" ]; then
+      setup_serial
+    fi
     arch-chroot /mnt grub-install "${DISK}"
     arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
   fi
