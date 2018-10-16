@@ -1,12 +1,16 @@
 #!/bin/env bash
 
 EXTRA_PACKAGES=""
-PACKAGES="base base-devel git docker openssh openvpn"
+PACKAGES="base base-devel git openssh"
 USR=$(head /dev/urandom | tr -dc a-z | head -c 15; echo -n)
 HST=$(head /dev/urandom | tr -dc A-Za-z | head -c 15; echo -n)
+EXTRA_GROUPS=""
 CNTY="us"
 DISK="/dev/sda"
+DISK_PARTITION=""
+PREFIX=""
 LCL="UTC"
+ENCRYPT=true
 SKIP_DISK=false
 SERIAL=false
 
@@ -29,15 +33,18 @@ function error_with_message {
 }
 
 function display_help(){
-  echo "Usage: arch-install.sh [OPTIONS]"
+  echo "Usage: arch-install.sh [-u USR] [-h HST] [-c CNTY] [-d DISK] [-g GROUPS] [-l LCL] [-e PKGS]"
   echo
-  echo "  -H, --hostname        Defines the hostname of the machine. Default: random 15 chars."
-  echo "  -u, --username        Defines the username for the user created during installation. Default: random 15 chars."
-  echo "  -c, --country         Defines the country initials for greping in mirrors. Default: us."
-  echo "  -d, --disk            Defines the base disk for the installation. Default: sda (E.g. /dev/sda)."
-  echo "  -l, --locale          Defines the locale for time configuration. Default: UTC."
+  echo "  -H, --hostname        Hostname of the machine. Default: random 15 chars."
+  echo "  -u, --username        Username for the user created during installation. Default: random 15 chars."
+  echo "  -c, --country         Country initials for greping in mirrors. Default: us."
+  echo "  -d, --disk            Base disk for the installation. Default: sda (E.g. /dev/sda)."
+  echo "  -l, --locale          Locale for time configuration. Default: UTC."
+  echo "  -g, --groups          Extra groups that [user] will be part of."
+  echo "  -p, --prefix          Disk partition prefix. Example: /dev/sdap1, prefix='p'. Default: ''"
   echo "      --skip-disk       Do not perform disk partitioning."
   echo "      --serial          Enable serial console interaction in grub."
+  echo "      --no-encrypt      Do not encrypt root partition."
   echo "  -e, --extra-packages  The extra packages for installation. Must be specified inside quotes. E.g. -e \"vim git\"."
   echo "  -h, --help            Display help message."
 }
@@ -58,6 +65,13 @@ function parse_args(){
           error_with_message "Expected argument after username option"
         fi
         USR=$2
+        shift;;
+
+      -g|--groups)
+        if [ -z $2 ] || [[ $2 == -* ]]; then
+          error_with_message "Expected argument after groups option"
+        fi
+        EXTRA_GROUPS=$2
         shift;;
 
       -c|--country)
@@ -88,11 +102,21 @@ function parse_args(){
         EXTRA_PACKAGES="$2"
         shift;;
 
+      -p|--prefix)
+        if [ -z $2 ] || [[ $2 == -* ]]; then
+          error_with_message "Expected argument after prefix option"
+        fi
+        PREFIX="$2"
+        shift;;
+
       -s|--skip-disk)
         SKIP_DISK=true;;
 
       --serial)
         SERIAL=true;;
+
+      --no-encrypt)
+        ENCRYPT=false;;
 
       -h|--help)
         display_help
@@ -102,6 +126,9 @@ function parse_args(){
         error_with_message "Unknow option $1"
     esac
     shift
+
+    DISK_PARTITION="${DISK}${PREFIX}"
+    EXTRA_GROUPS="${EXTRA_GROUPS//,/ }"
   done
 }
 
@@ -120,6 +147,12 @@ function rank_mirrors () {
   rankmirrors -n 15 ${tmp_ml} > /etc/pacman.d/mirrorlist
 }
 
+function encrypt_disk () {
+  echo "Setting up cryptography"
+  try_until_ok "cryptsetup -y -v luksFormat ${DISK_PARTITION}2" "Could not setup disk encryption, try again."
+  cryptsetup open "${DISK_PARTITION}2" cryptroot
+}
+
 function setup_disk () {
   echo "Formatting disks"
   if [ -d /sys/firmware/efi ]; then
@@ -130,18 +163,17 @@ function setup_disk () {
     echo -e "o\nn\n\n\n\n+512M\nn\n\n\n\n\nw\n" | fdisk ${DISK}
   fi
 
-  echo "Setting up cryptography"
-  try_until_ok "cryptsetup -y -v luksFormat ${DISK}2" "Could not setup disk encryption, try again."
-  cryptsetup open "${DISK}2" cryptroot
-  mkfs.ext4 /dev/mapper/cryptroot
-  mount /dev/mapper/cryptroot /mnt
+  root_disk="${DISK_PARTITION}2"
+  ${ENCRYPT} && encrypt_disk && root_disk="/dev/mapper/cryptroot"
+  mkfs.ext4 "${root_disk}"
+  mount "${root_disk}" /mnt
 
   echo "Setting up boot directory"
-  mkfs.fat -F32 "${DISK}1"
+  mkfs.fat -F32 "${DISK_PARTITION}1"
   mkdir /mnt/boot
-  mount "${DISK}1" /mnt/boot
+  mount "${DISK_PARTITION}1" /mnt/boot
 
-  export DEVICE_UUID="$(blkid ${DISK}2 | awk ' { print $2 } ' | sed s/\"//g)"
+  export DEVICE_UUID="$(blkid ${DISK_PARTITION}2 | awk ' { print $2 } ' | sed s/\"//g)"
   echo $DEVICE_UUID > ./device-uuid
   echo "Device UUID Your device UUID is stored at ./device-uuid"
 }
@@ -155,10 +187,18 @@ function install_packages () {
   cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
 }
 
+function setup_groups () {
+  echo "Setting up "${USR}" groups"
+  for g in ${EXTRA_GROUPS}; do
+    arch-chroot /mnt groupadd -f "$g"
+    arch-chroot /mnt usermod -a -G "$g" "${USR}"
+  done
+}
+
 function setup_users () {
   echo "Setting up $USR"
-  arch-chroot /mnt groupadd -f docker
-  arch-chroot /mnt useradd -m -s /bin/bash -g users -G wheel,docker $USR
+  arch-chroot /mnt useradd -m -s /bin/bash -g users $USR
+  [ ! -z "${EXTRA_GROUPS}" ] && setup_groups
   echo "Set root password"
   try_until_ok "arch-chroot /mnt passwd" "Could not set root password, try again."
   echo "Set $USR password"
@@ -192,22 +232,31 @@ function setup_serial () {
   arch-chroot /mnt mv /etc/default/clean_grub /etc/default/grub
 }
 
+function setup_efiboot_encrypt_options () {
+  ${ENCRYPT} && options="cryptdevice=${DEVICE_UUID}:cryptroot root=/dev/mapper/cryptroot"
+  options="options ${options} quiet rw"
+  arch-chroot /mnt bash -c "echo -e \"\n${options}\" >> /boot/loader/entries/arch.conf"
+}
+
+function setup_biosboot_encrypt_options () {
+  arch-chroot /mnt bash -c "grep -v 'GRUB_CMDLINE_LINUX=\"\"' /etc/default/grub > /etc/default/clean_grub"
+  arch-chroot /mnt bash -c "echo GRUB_CMDLINE_LINUX=\\\"cryptdevice=${DEVICE_UUID}:cryptroot\\\" >> /etc/default/clean_grub"
+  arch-chroot /mnt mv /etc/default/clean_grub /etc/default/grub
+}
+
 function setup_bootloader () {
   if [ -d /sys/firmware/efi ]; then
     echo "Configuring bootctl"
     arch-chroot /mnt bootctl install
     arch-chroot /mnt cp -f /usr/share/systemd/bootctl/loader.conf /boot/loader/loader.conf
     echo "editor 0" >> /mnt/boot/loader/loader.conf
-    arch-chroot /mnt bash -c "echo -e \"title Arch Linux\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions cryptdevice=${DEVICE_UUID}:cryptroot root=/dev/mapper/cryptroot quiet rw\" > /boot/loader/entries/arch.conf"
+    arch-chroot /mnt bash -c "echo -e \"title Arch Linux\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\" > /boot/loader/entries/arch.conf"
+    ${ENCRYPT} && setup_efiboot_encrypt_options
   else
     echo "Configuring grub"
     arch-chroot /mnt pacman -S grub --noconfirm
-    arch-chroot /mnt bash -c "grep -v 'GRUB_CMDLINE_LINUX=\"\"' /etc/default/grub > /etc/default/clean_grub"
-    arch-chroot /mnt bash -c "echo GRUB_CMDLINE_LINUX=\\\"cryptdevice=${DEVICE_UUID}:cryptroot\\\" >> /etc/default/clean_grub"
-    arch-chroot /mnt mv /etc/default/clean_grub /etc/default/grub
-    if [ "$SERIAL" ]; then
-      setup_serial
-    fi
+    ${ENCRYPT} && setup_biosboot_encrypt_options
+    ${SERIAL} && setup_serial
     arch-chroot /mnt grub-install "${DISK}"
     arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
   fi
